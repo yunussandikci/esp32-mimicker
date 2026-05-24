@@ -15,7 +15,7 @@ constexpr const char* HID_PRODUCT = "G413 Gaming Keyboard";
 constexpr const char* HID_VENDOR  = "Logitech";
 constexpr const char* HID_SERIAL  = "0000314159";
 
-constexpr int     PIN_RGB        = 21;
+constexpr int     PIN_RGB        = 48;
 constexpr uint8_t LED_BRIGHTNESS = 30;
 
 constexpr size_t MAX_SCRIPT = 4096;
