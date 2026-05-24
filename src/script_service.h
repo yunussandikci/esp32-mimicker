@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <USBHIDKeyboard.h>
 #include <USBHIDMouse.h>
+#include <Preferences.h>
 #include "config.h"
 
 namespace script {
@@ -20,8 +21,12 @@ inline volatile bool running = false;
 
 namespace detail {
 
+constexpr const char* NVS_NAMESPACE = "script";
+constexpr const char* NVS_KEY_TEXT  = "text";
+
 inline USBHIDKeyboard keyboard;
 inline USBHIDMouse    mouse;
+inline Preferences    prefs;
 
 struct KeyName {
   const char* name;
@@ -195,6 +200,17 @@ inline void exec(const String& line) {
 inline void init() {
   detail::keyboard.begin();
   detail::mouse.begin();
+  detail::prefs.begin(detail::NVS_NAMESPACE, false);
+
+  String saved = detail::prefs.getString(detail::NVS_KEY_TEXT, "");
+  if (saved.length() > 0) {
+    size_t length = saved.length();
+    if (length >= cfg::MAX_SCRIPT) {
+      length = cfg::MAX_SCRIPT - 1;
+    }
+    memcpy(text, saved.c_str(), length);
+    text[length] = 0;
+  }
 }
 
 
@@ -227,6 +243,7 @@ inline void save(const String& body) {
   }
   memcpy(text, body.c_str(), length);
   text[length] = 0;
+  detail::prefs.putString(detail::NVS_KEY_TEXT, text);
 }
 
 

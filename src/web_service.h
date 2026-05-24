@@ -2,11 +2,87 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include "config.h"
-#include "script.h"
+#include "script_service.h"
+#include "wifi_service.h"
 
 namespace web {
 
 inline WebServer server(cfg::HTTP_PORT);
+
+
+static const char SETUP_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html><html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HID Mimicker Setup</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:linear-gradient(135deg,#f5f7fa,#e4e9f2);min-height:100vh;padding:16px;color:#333}
+.container{max-width:440px;margin:60px auto}
+.card{background:#fff;border-radius:16px;padding:28px;box-shadow:0 2px 20px rgba(0,0,0,.08)}
+h1{font-size:22px;color:#2c3e6b;margin-bottom:6px}
+.subtitle{color:#888;margin-bottom:22px;font-size:14px}
+label{display:block;margin-bottom:6px;font-size:13px;font-weight:600;color:#555}
+select,input{width:100%;padding:10px 12px;border:1px solid #d0d5e0;border-radius:8px;font-size:14px;margin-bottom:14px;outline:none;background:#fff}
+select:focus,input:focus{border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,.15)}
+.btn{width:100%;padding:12px;background:#2c3e6b;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer}
+.btn:hover{background:#3b5290}
+.btn:disabled{background:#d0d5e0;color:#999;cursor:not-allowed}
+.msg{margin-top:14px;padding:12px;border-radius:8px;text-align:center;font-size:13px;display:none}
+.msg.ok{display:block;background:#ecfdf5;color:#059669}
+.msg.err{display:block;background:#fef2f2;color:#dc2626}
+.refresh{background:none;border:none;color:#3b82f6;cursor:pointer;font-size:12px;margin-bottom:14px;padding:0}
+</style></head><body><div class="container"><div class="card">
+<h1>WiFi Setup</h1>
+<div class="subtitle">Pick your network and enter the password.</div>
+<label>Network</label>
+<select id="ssid"><option>Scanning...</option></select>
+<button class="refresh" onclick="loadNetworks()">Rescan</button>
+<label>Password</label>
+<input type="password" id="pass" placeholder="(blank for open networks)">
+<button class="btn" id="save" onclick="save()">Save &amp; Connect</button>
+<div class="msg" id="msg"></div>
+</div></div>
+<script>
+function loadNetworks(){
+  const sel=document.getElementById('ssid');
+  sel.innerHTML='<option>Scanning...</option>';
+  fetch('/wifi').then(r=>r.json()).then(d=>{
+    sel.innerHTML='';
+    d.networks.forEach(n=>{
+      const o=document.createElement('option');
+      o.value=n.ssid;
+      o.textContent=n.ssid+' ('+n.rssi+'dBm)';
+      sel.appendChild(o);
+    });
+    if(!d.networks.length){
+      sel.innerHTML='<option>(none found)</option>';
+    }
+  }).catch(()=>{
+    sel.innerHTML='<option>(scan failed)</option>';
+  });
+}
+function save(){
+  const ssid=document.getElementById('ssid').value;
+  const pass=document.getElementById('pass').value;
+  const btn=document.getElementById('save');
+  const msg=document.getElementById('msg');
+  btn.disabled=true;
+  msg.className='msg';
+  fetch('/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ssid)+'&pass='+encodeURIComponent(pass)})
+  .then(r=>{
+    if(!r.ok)throw 0;
+    msg.className='msg ok';
+    msg.textContent='Saved. Device restarting — reconnect to your normal WiFi to use the mimicker.';
+  }).catch(()=>{
+    msg.className='msg err';
+    msg.textContent='Save failed';
+    btn.disabled=false;
+  });
+}
+loadNetworks();
+</script></body></html>
+)HTML";
+
 
 static const char PAGE_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html><html><head>
@@ -48,6 +124,13 @@ h1{font-size:20px;color:#2c3e6b;display:flex;align-items:center;gap:10px}
 .dot{width:8px;height:8px;border-radius:50%}
 .d-idle{background:#bbb}.d-ready{background:#10b981}.d-running{background:#ef4444}
 .hint{margin-top:8px;font-size:11px;color:#999;text-align:center}
+.raw{margin-top:14px}
+.raw-label{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.raw-label span{font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.raw-label button{background:none;border:none;color:#3b82f6;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px}
+.raw-label button:hover{background:#eff6ff}
+.raw textarea{width:100%;font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:12.5px;line-height:1.5;padding:10px 12px;border:1px solid #e5e9f0;border-radius:8px;background:#f8f9fc;resize:vertical;min-height:140px;outline:none;color:#333}
+.raw textarea:focus{border-color:#3b82f6;background:#fff;box-shadow:0 0 0 2px rgba(59,130,246,.15)}
 </style></head><body><div class="container">
 <div class="card" style="padding:16px 24px"><h1>HID Mimicker</h1></div>
 <div class="card">
@@ -66,6 +149,10 @@ h1{font-size:20px;color:#2c3e6b;display:flex;align-items:center;gap:10px}
 <div class="block b-rpt" draggable="true" data-cmd="REPEAT">REPEAT</div>
 </div>
 <div class="builder" id="builder"></div>
+<div class="raw">
+<div class="raw-label"><span>Script (editable)</span><button onclick="copyRaw()">Copy</button></div>
+<textarea id="rawText" spellcheck="false" placeholder="WAIT 1000&#10;STRING hello&#10;KEY ENTER"></textarea>
+</div>
 <div class="controls">
 <button class="btn btn-save" onclick="doSave()">Save</button>
 <button class="btn btn-start" id="btnStart" onclick="doStart()">Start</button>
@@ -74,10 +161,10 @@ h1{font-size:20px;color:#2c3e6b;display:flex;align-items:center;gap:10px}
 <div class="status s-idle" id="status">
 <span class="dot d-idle" id="dot"></span><span id="msg">Drop blocks, Save, then Start</span>
 </div>
-<div class="hint">Tip: touch the wired pin to start/stop without the UI.</div>
 </div></div>
 <script>
 const builder = document.getElementById('builder');
+const rawText = document.getElementById('rawText');
 const CFG = {
   WAIT:{c:'b-wait',i:[{n:'ms',t:'number',v:'1000'}]},
   KEY:{c:'b-key',i:[{n:'key',t:'text',v:'A'}]},
@@ -124,10 +211,12 @@ function addBlock(cmd){
   }
   row.appendChild(pd);
   const del = document.createElement('button');
-  del.className = 'del-btn'; del.textContent = '×'; del.onclick = () => row.remove();
+  del.className = 'del-btn'; del.textContent = '×';
+  del.onclick = () => { row.remove(); syncText(); };
   row.appendChild(del);
+  row.addEventListener('input', syncText);
   row.addEventListener('dragstart', e => { row.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
-  row.addEventListener('dragend', () => row.classList.remove('dragging'));
+  row.addEventListener('dragend', () => { row.classList.remove('dragging'); syncText(); });
   row.addEventListener('dragover', e => {
     e.preventDefault();
     const dr = builder.querySelector('.dragging'); if (!dr || dr === row) return;
@@ -136,6 +225,10 @@ function addBlock(cmd){
     else builder.insertBefore(dr, row.nextSibling);
   });
   builder.appendChild(row);
+  syncText();
+}
+function syncText(){
+  rawText.value = genScript();
 }
 function genScript(){
   const lines = [];
@@ -178,22 +271,32 @@ function poll(){
   }).catch(() => {});
 }
 function doSave(){
-  const s = genScript();
+  const s = rawText.value;
   fetch('/save', {method:'POST', body: s}).then(() => { saved = s; setStatus('ready', 'Saved'); });
 }
 function doStart(){
-  const s = genScript();
+  const s = rawText.value;
   const p = s !== saved ? fetch('/save', {method:'POST', body: s}).then(() => saved = s) : Promise.resolve();
   p.then(() => fetch('/start', {method:'POST'})).then(poll);
 }
 function doStop(){ fetch('/stop', {method:'POST'}).then(poll); }
-fetch('/script').then(r => r.text()).then(s => { saved = s; parseScript(s); });
+function copyRaw(){
+  rawText.select();
+  document.execCommand('copy');
+  rawText.setSelectionRange(0, 0); rawText.blur();
+}
+rawText.addEventListener('change', () => parseScript(rawText.value));
+fetch('/script').then(r => r.text()).then(s => { saved = s; rawText.value = s; parseScript(s); });
 setInterval(poll, 1500);
 </script></body></html>
 )HTML";
 
 inline void handleRoot() {
-  server.send_P(200, "text/html", PAGE_HTML);
+  if (wifi::is_ap()) {
+    server.send_P(200, "text/html", SETUP_HTML);
+  } else {
+    server.send_P(200, "text/html", PAGE_HTML);
+  }
 }
 
 
@@ -221,7 +324,7 @@ inline void handleStop() {
 
 
 inline void handleIP() {
-  server.send(200, "text/plain", WiFi.localIP().toString());
+  server.send(200, "text/plain", wifi::ip().toString());
 }
 
 
@@ -233,6 +336,42 @@ inline void handleStatus() {
 }
 
 
+inline void handleWifiScan() {
+  int found = WiFi.scanNetworks();
+  String body = "{\"networks\":[";
+  for (int i = 0; i < found; i++) {
+    if (i > 0) {
+      body += ",";
+    }
+    String ssid = WiFi.SSID(i);
+    ssid.replace("\\", "\\\\");
+    ssid.replace("\"", "\\\"");
+    body += "{\"ssid\":\"";
+    body += ssid;
+    body += "\",\"rssi\":";
+    body += WiFi.RSSI(i);
+    body += "}";
+  }
+  body += "]}";
+  server.send(200, "application/json", body);
+  WiFi.scanDelete();
+}
+
+
+inline void handleWifiSave() {
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+  if (ssid.length() == 0) {
+    server.send(400, "text/plain", "ssid required");
+    return;
+  }
+  wifi::save_credentials(ssid, pass);
+  server.send(200, "text/plain", "saved");
+  delay(500);
+  ESP.restart();
+}
+
+
 inline void init() {
   server.on("/",       HTTP_GET,  handleRoot);
   server.on("/script", HTTP_GET,  handleScript);
@@ -241,6 +380,9 @@ inline void init() {
   server.on("/stop",   HTTP_POST, handleStop);
   server.on("/status", HTTP_GET,  handleStatus);
   server.on("/ip",     HTTP_GET,  handleIP);
+  server.on("/wifi",   HTTP_GET,  handleWifiScan);
+  server.on("/wifi",   HTTP_POST, handleWifiSave);
+  server.onNotFound(handleRoot);
   server.begin();
 }
 
