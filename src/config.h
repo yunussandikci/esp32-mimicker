@@ -18,6 +18,6 @@ constexpr const char* HID_SERIAL  = "0000314159";
 constexpr int     PIN_RGB        = 48;
 constexpr uint8_t LED_BRIGHTNESS = 30;
 
-constexpr size_t MAX_SCRIPT = 4096;
+constexpr size_t MAX_SCRIPT = 16384;
 
 } // namespace cfg
